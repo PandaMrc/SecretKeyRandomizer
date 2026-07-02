@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows executable
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest
+
+      - name: Build executable
+        run: python build_exe.py
+
+      - name: Prepare source archive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
+          Copy-Item -LiteralPath dist\SecretKeyRandomizer.exe -Destination release-artifacts\SecretKeyRandomizer.exe -Force
+          Compress-Archive -Path app,docs,tests,scripts,.github,.env.example,.gitignore,build_exe.py,pyproject.toml,README.md,requirements.txt,SECURITY.md,RELEASE_NOTES.md -DestinationPath release-artifacts\SecretKeyRandomizer-source.zip -Force
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SecretKeyRandomizer-windows
+          path: release-artifacts/*
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: SecretKeyRandomizer ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            release-artifacts/SecretKeyRandomizer.exe
+            release-artifacts/SecretKeyRandomizer-source.zip

@@ -45,7 +45,18 @@ Important limits:
 
 ## Installation
 
-Python 3.12 or newer is recommended.
+For end users, download `SecretKeyRandomizer.exe` from GitHub Releases and run
+it directly. The release `.exe` is packaged with PyInstaller and includes the
+Python runtime and required Python packages. Python, PySide6, pytest, and
+PyInstaller do not need to be installed separately to run the release asset.
+
+For developers running from source, Python 3.12 or newer is recommended.
+
+```powershell
+.\scripts\setup-dev.ps1
+```
+
+Manual setup:
 
 ```powershell
 python -m venv .venv
@@ -123,6 +134,21 @@ Expected output:
 ```text
 dist/SecretKeyRandomizer.exe
 ```
+
+## GitHub Release
+
+Push a version tag to build and publish a Windows release automatically:
+
+```powershell
+git tag v0.1.0
+git push origin main
+git push origin v0.1.0
+```
+
+The release workflow runs tests, builds `SecretKeyRandomizer.exe`, creates a
+source zip, and attaches both files to the GitHub Release.
+
+Runtime notes for Windows users are in `docs/windows-install.md`.
 
 ## Run Tests
 
