@@ -8,7 +8,7 @@ Use the GitHub Release asset:
 SecretKeyRandomizer.exe
 ```
 
-The release `.exe` is packaged with PyInstaller as a one-file Windows
+The release `.exe` is packaged with PyInstaller as a one-file portable Windows
 application. It includes the Python runtime and required Python packages inside
 the executable bundle.
 
@@ -18,10 +18,17 @@ End users do not need to install:
 - PySide6
 - pytest
 - PyInstaller
+- A setup wizard or installer
 
 On first launch, Windows SmartScreen may warn because the executable is not code
 signed. This is a publisher trust warning, not a missing dependency. Code signing
 can be added later with a Windows code-signing certificate.
+
+To verify the download, compare the SHA256 hash with the release checksum:
+
+```powershell
+Get-FileHash .\SecretKeyRandomizer.exe -Algorithm SHA256
+```
 
 ## For Developers
 

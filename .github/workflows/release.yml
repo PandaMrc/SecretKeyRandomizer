@@ -40,7 +40,9 @@ jobs:
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
           Copy-Item -LiteralPath dist\SecretKeyRandomizer.exe -Destination release-artifacts\SecretKeyRandomizer.exe -Force
-          Compress-Archive -Path app,docs,tests,scripts,.github,.env.example,.gitignore,build_exe.py,pyproject.toml,README.md,requirements.txt,SECURITY.md,RELEASE_NOTES.md -DestinationPath release-artifacts\SecretKeyRandomizer-source.zip -Force
+          $hash = Get-FileHash -Algorithm SHA256 release-artifacts\SecretKeyRandomizer.exe
+          "$($hash.Hash.ToLower())  SecretKeyRandomizer.exe" | Set-Content -Encoding ascii release-artifacts\SecretKeyRandomizer.exe.sha256
+          Compress-Archive -Path app,docs,tests,scripts,.github,.env.example,.gitignore,build_exe.py,pyproject.toml,README.md,requirements.txt,SECURITY.md,RELEASE_NOTES.md,LICENSE -DestinationPath release-artifacts\SecretKeyRandomizer-source.zip -Force
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
@@ -56,4 +58,5 @@ jobs:
           body_path: RELEASE_NOTES.md
           files: |
             release-artifacts/SecretKeyRandomizer.exe
+            release-artifacts/SecretKeyRandomizer.exe.sha256
             release-artifacts/SecretKeyRandomizer-source.zip

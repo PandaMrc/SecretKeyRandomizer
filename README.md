@@ -9,17 +9,19 @@ generation core separate from the PySide6 interface.
 
 ## Features
 
-- PySide6 desktop UI with a dark theme
+- PySide6 desktop UI with Single, Bulk .env, and Template Pack workflows
 - CSPRNG-backed secret generation
-- Built-in presets for common developer secrets
+- Built-in presets for common developer and framework secrets
 - Hex, Base64, Base64URL, ASCII-safe, custom charset, and UUID-v4 outputs
-- Plain text, `.env`, and JSON output formats
+- Plain value, `.env`, and JSON output formats
+- Bulk `.env` and template pack generation
+- Masked output by default with manual reveal
 - Prefix and suffix support
 - Entropy estimate and security level display
-- Manual copy to clipboard with optional auto-clear
+- Manual copy to clipboard with 10, 30, or 60 second auto-clear
 - No telemetry, no network access, no database, no secret history
 - pytest test coverage for the core behavior
-- PyInstaller packaging helper
+- Portable Windows EXE release with SHA256 checksum
 
 ## Security Model
 
@@ -76,6 +78,9 @@ python app/main.py
 python -m app.cli.commands generate --preset jwt --format env
 python -m app.cli.commands generate --preset aes-256 --encoding hex --format env
 python -m app.cli.commands generate --bytes 32 --encoding base64url --env JWT_SECRET --format json
+python -m app.cli.commands bulk --preset jwt --preset api-key --preset webhook --format env
+python -m app.cli.commands template --template django --format env
+python -m app.cli.commands list-presets
 ```
 
 ## Presets
@@ -93,6 +98,11 @@ python -m app.cli.commands generate --bytes 32 --encoding base64url --env JWT_SE
 | Database Encryption Key | `DATABASE_ENCRYPTION_KEY` | 32 | Hex |
 | Salt | `SALT` | 16 | Hex |
 | Random Token | `RANDOM_TOKEN` | 32 | Base64URL |
+| Django SECRET_KEY | `DJANGO_SECRET_KEY` | 50 | ASCII-safe |
+| Laravel APP_KEY | `APP_KEY` | 32 | Base64 |
+| Rails SECRET_KEY_BASE | `SECRET_KEY_BASE` | 64 | Hex |
+| NextAuth Secret | `NEXTAUTH_SECRET` | 32 | Base64URL |
+| OAuth Client Secret | `OAUTH_CLIENT_SECRET` | 32 | Base64URL |
 
 ## Entropy Levels
 
@@ -123,6 +133,12 @@ ENCRYPTION_KEY=<generate-with-secretkeyrandomizer>
 python build_exe.py
 ```
 
+Build the local release files with a checksum:
+
+```powershell
+.\scripts\build-release.ps1
+```
+
 Equivalent PyInstaller command:
 
 ```powershell
@@ -133,6 +149,7 @@ Expected output:
 
 ```text
 dist/SecretKeyRandomizer.exe
+dist/SecretKeyRandomizer.exe.sha256
 ```
 
 ## GitHub Release
@@ -140,13 +157,14 @@ dist/SecretKeyRandomizer.exe
 Push a version tag to build and publish a Windows release automatically:
 
 ```powershell
-git tag v0.1.0
+git tag v1.0.0
 git push origin main
-git push origin v0.1.0
+git push origin v1.0.0
 ```
 
 The release workflow runs tests, builds `SecretKeyRandomizer.exe`, creates a
-source zip, and attaches both files to the GitHub Release.
+SHA256 checksum, creates a source zip, and attaches all release files to the
+GitHub Release.
 
 Runtime notes for Windows users are in `docs/windows-install.md`.
 
@@ -158,4 +176,4 @@ pytest
 
 ## License
 
-Add a license before publishing the repository.
+MIT License.

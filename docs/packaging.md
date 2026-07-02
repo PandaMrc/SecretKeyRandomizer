@@ -19,3 +19,16 @@ The expected Windows artifact is:
 ```text
 dist/SecretKeyRandomizer.exe
 ```
+
+Build local release files with a SHA256 checksum:
+
+```powershell
+.\scripts\build-release.ps1
+```
+
+Expected release artifacts:
+
+```text
+dist/SecretKeyRandomizer.exe
+dist/SecretKeyRandomizer.exe.sha256
+```

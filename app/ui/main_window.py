@@ -17,25 +17,23 @@ from PySide6.QtWidgets import (
     QPushButton,
     QPlainTextEdit,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from app.core.entropy import (
-    calculate_byte_entropy,
-    calculate_charset_entropy,
-    get_entropy_warning,
-    get_security_level,
+from app.core.display import mask_secret
+from app.core.formatters import format_env, format_env_block, format_generated_json, format_json_array
+from app.core.generator import (
+    ASCII_SAFE_CHARSET,
+    generate_batch,
+    generate_from_request,
+    generate_template_pack,
+    request_from_preset,
 )
-from app.core.formatters import format_env, format_json, format_plain
-from app.core.generator import ASCII_SAFE_CHARSET, generate_secret
-from app.core.presets import PRESETS, SecretPreset
-from app.core.validators import (
-    normalize_charset,
-    normalize_encoding,
-    normalize_output_format,
-    validate_env_name,
-)
+from app.core.models import GeneratedSecret, GenerationBatch, GenerationRequest
+from app.core.presets import PRESETS, TEMPLATE_PACKS, SecretPreset
+from app.core.validators import normalize_encoding, normalize_output_format, validate_env_name
 from app.ui.widgets import MetricCard
 
 
@@ -49,76 +47,56 @@ ENCODINGS = [
 ]
 
 OUTPUT_FORMATS = [
-    ("plain", "Plain text"),
+    ("plain", "Value only"),
     ("env", ".env"),
     ("json", "JSON"),
 ]
 
 DEFAULT_CUSTOM_CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-."
-UUID_WARNING = (
-    "UUID values are useful as public identifiers. They are not recommended as "
-    "high-security secret keys."
-)
-CLIPBOARD_WARNING = (
-    "Clipboard is not secure storage. Copied secrets can be read by other applications."
-)
+CLIPBOARD_WARNING = "Clipboard is not secure storage. Copied secrets can be read by other applications."
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("SecretKeyRandomizer")
-        self.resize(980, 720)
-        self._last_output = ""
+        self.resize(1120, 760)
 
-        self.preset_combo = QComboBox()
-        for preset in PRESETS.values():
-            self.preset_combo.addItem(preset.name, preset.key)
+        self._current_batch: GenerationBatch | None = None
+        self._current_output = ""
+        self._last_clipboard_text = ""
 
-        self.encoding_combo = QComboBox()
-        for value, label in ENCODINGS:
-            self.encoding_combo.addItem(label, value)
-
-        self.length_input = QSpinBox()
-        self.length_input.setRange(1, 4096)
-        self.length_input.setValue(32)
-
-        self.prefix_input = QLineEdit()
-        self.suffix_input = QLineEdit()
-        self.env_name_input = QLineEdit()
-        self.custom_charset_input = QLineEdit(DEFAULT_CUSTOM_CHARSET)
-
-        self.output_format_combo = QComboBox()
-        for value, label in OUTPUT_FORMATS:
-            self.output_format_combo.addItem(label, value)
-        self.output_format_combo.setCurrentIndex(1)
-
-        self.generate_button = QPushButton("Generate")
-        self.copy_button = QPushButton("Copy")
-        self.copy_button.setEnabled(False)
+        self.tabs = QTabWidget()
+        self.single_widgets: dict[str, object] = {}
+        self.bulk_checks: dict[str, QCheckBox] = {}
+        self.template_combo = QComboBox()
 
         self.output_area = QPlainTextEdit()
         self.output_area.setReadOnly(True)
-        self.output_area.setMinimumHeight(170)
+        self.output_area.setMinimumHeight(220)
+
+        self.reveal_checkbox = QCheckBox("Reveal secrets")
+        self.reveal_checkbox.setChecked(False)
+        self.copy_value_button = QPushButton("Copy value")
+        self.copy_env_button = QPushButton("Copy env line")
+        self.copy_all_button = QPushButton("Copy all")
+        self.clear_clipboard_button = QPushButton("Clear clipboard")
+        self.clear_delay_combo = QComboBox()
+        for seconds in (10, 30, 60):
+            self.clear_delay_combo.addItem(f"{seconds}s", seconds)
+        self.clear_delay_combo.setCurrentIndex(1)
 
         self.entropy_card = MetricCard("Entropy", "-")
         self.security_card = MetricCard("Security Level", "-")
-
         self.warning_label = QLabel("")
         self.warning_label.setObjectName("Warning")
         self.warning_label.setWordWrap(True)
         self.warning_label.hide()
 
-        self.clipboard_warning_label = QLabel(CLIPBOARD_WARNING)
-        self.clipboard_warning_label.setObjectName("ClipboardWarning")
-        self.clipboard_warning_label.setWordWrap(True)
-
-        self.clear_clipboard_checkbox = QCheckBox("Clear clipboard after 30 seconds")
-        self.clear_clipboard_checkbox.setChecked(True)
-
         self._build_layout()
         self._connect_signals()
-        self.apply_preset()
+        self._apply_single_preset()
+        self._set_copy_enabled(False)
 
     def _build_layout(self) -> None:
         root = QWidget()
@@ -129,12 +107,11 @@ class MainWindow(QMainWindow):
         title = QLabel("SecretKeyRandomizer")
         title.setObjectName("Title")
         subtitle = QLabel(
-            "Generate high-entropy secrets with cryptographically secure randomness. "
-            "Security does not rely on hidden algorithms or closed source code."
+            "Generate high-entropy secrets with CSPRNG-backed randomness. "
+            "No secret history, telemetry, network access, or storage."
         )
         subtitle.setObjectName("Subtitle")
         subtitle.setWordWrap(True)
-
         main_layout.addWidget(title)
         main_layout.addWidget(subtitle)
 
@@ -142,32 +119,30 @@ class MainWindow(QMainWindow):
         content_layout.setHorizontalSpacing(16)
         content_layout.setVerticalSpacing(16)
 
-        settings_card = self._card()
-        settings_form = QFormLayout(settings_card)
-        settings_form.setContentsMargins(16, 14, 16, 14)
-        settings_form.setSpacing(10)
-        settings_form.addRow("Preset", self.preset_combo)
-        settings_form.addRow("Encoding", self.encoding_combo)
-        settings_form.addRow("Bytes / chars", self.length_input)
-        settings_form.addRow("Prefix", self.prefix_input)
-        settings_form.addRow("Suffix", self.suffix_input)
-        settings_form.addRow("ENV name", self.env_name_input)
-        settings_form.addRow("Custom charset", self.custom_charset_input)
-        settings_form.addRow("Output format", self.output_format_combo)
+        self.tabs.addTab(self._build_single_tab(), "Single")
+        self.tabs.addTab(self._build_bulk_tab(), "Bulk .env")
+        self.tabs.addTab(self._build_template_tab(), "Template Packs")
 
         output_card = self._card()
         output_layout = QVBoxLayout(output_card)
         output_layout.setContentsMargins(16, 14, 16, 14)
         output_layout.setSpacing(10)
 
-        button_layout = QHBoxLayout()
-        button_layout.addWidget(self.generate_button)
-        button_layout.addWidget(self.copy_button)
-        button_layout.addStretch(1)
-        output_layout.addLayout(button_layout)
+        action_layout = QHBoxLayout()
+        action_layout.addWidget(self.reveal_checkbox)
+        action_layout.addStretch(1)
+        action_layout.addWidget(QLabel("Clear after"))
+        action_layout.addWidget(self.clear_delay_combo)
+        output_layout.addLayout(action_layout)
         output_layout.addWidget(self.output_area)
-        output_layout.addWidget(self.clear_clipboard_checkbox)
-        output_layout.addWidget(self.clipboard_warning_label)
+
+        copy_layout = QHBoxLayout()
+        copy_layout.addWidget(self.copy_value_button)
+        copy_layout.addWidget(self.copy_env_button)
+        copy_layout.addWidget(self.copy_all_button)
+        copy_layout.addWidget(self.clear_clipboard_button)
+        copy_layout.addStretch(1)
+        output_layout.addLayout(copy_layout)
 
         metrics_layout = QHBoxLayout()
         metrics_layout.addWidget(self.entropy_card)
@@ -175,16 +150,125 @@ class MainWindow(QMainWindow):
         output_layout.addLayout(metrics_layout)
         output_layout.addWidget(self.warning_label)
 
-        content_layout.addWidget(settings_card, 0, 0)
+        clipboard_label = QLabel(CLIPBOARD_WARNING)
+        clipboard_label.setObjectName("ClipboardWarning")
+        clipboard_label.setWordWrap(True)
+        output_layout.addWidget(clipboard_label)
+
+        content_layout.addWidget(self.tabs, 0, 0)
         content_layout.addWidget(output_card, 0, 1)
         content_layout.setColumnStretch(0, 1)
         content_layout.setColumnStretch(1, 2)
-
         main_layout.addLayout(content_layout)
-        main_layout.addStretch(1)
 
         self.setCentralWidget(root)
         self.statusBar().showMessage("Ready")
+
+    def _build_single_tab(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+
+        form_card = self._card()
+        form = QFormLayout(form_card)
+        form.setContentsMargins(16, 14, 16, 14)
+        form.setSpacing(10)
+
+        preset_combo = QComboBox()
+        for preset in PRESETS.values():
+            preset_combo.addItem(f"{preset.name} · {preset.category}", preset.key)
+        encoding_combo = QComboBox()
+        for value, label in ENCODINGS:
+            encoding_combo.addItem(label, value)
+        length_input = QSpinBox()
+        length_input.setRange(1, 4096)
+        prefix_input = QLineEdit()
+        suffix_input = QLineEdit()
+        env_name_input = QLineEdit()
+        custom_charset_input = QLineEdit(DEFAULT_CUSTOM_CHARSET)
+        output_format_combo = QComboBox()
+        for value, label in OUTPUT_FORMATS:
+            output_format_combo.addItem(label, value)
+        output_format_combo.setCurrentIndex(1)
+        generate_button = QPushButton("Generate")
+
+        self.single_widgets = {
+            "preset": preset_combo,
+            "encoding": encoding_combo,
+            "length": length_input,
+            "prefix": prefix_input,
+            "suffix": suffix_input,
+            "env": env_name_input,
+            "charset": custom_charset_input,
+            "format": output_format_combo,
+            "generate": generate_button,
+        }
+
+        form.addRow("Preset", preset_combo)
+        form.addRow("Encoding", encoding_combo)
+        form.addRow("Bytes / chars", length_input)
+        form.addRow("Prefix", prefix_input)
+        form.addRow("Suffix", suffix_input)
+        form.addRow("ENV name", env_name_input)
+        form.addRow("Custom charset", custom_charset_input)
+        form.addRow("Output format", output_format_combo)
+
+        layout.addWidget(form_card)
+        layout.addWidget(generate_button)
+        layout.addStretch(1)
+        return widget
+
+    def _build_bulk_tab(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+
+        info = QLabel("Select any presets and generate a complete .env block.")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        grid_card = self._card()
+        grid = QGridLayout(grid_card)
+        grid.setContentsMargins(16, 14, 16, 14)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(8)
+
+        for index, preset in enumerate(PRESETS.values()):
+            checkbox = QCheckBox(f"{preset.name} ({preset.env_name})")
+            checkbox.setChecked(preset.key in {"jwt", "api_key", "webhook", "database_encryption"})
+            self.bulk_checks[preset.key] = checkbox
+            grid.addWidget(checkbox, index // 2, index % 2)
+
+        generate_button = QPushButton("Generate bulk .env")
+        generate_button.clicked.connect(self.generate_bulk)
+        layout.addWidget(grid_card)
+        layout.addWidget(generate_button)
+        layout.addStretch(1)
+        return widget
+
+    def _build_template_tab(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+
+        form_card = self._card()
+        form = QFormLayout(form_card)
+        form.setContentsMargins(16, 14, 16, 14)
+        form.setSpacing(10)
+
+        for key, (name, preset_keys) in TEMPLATE_PACKS.items():
+            self.template_combo.addItem(f"{name} · {len(preset_keys)} secrets", key)
+        generate_button = QPushButton("Generate template pack")
+        generate_button.clicked.connect(self.generate_template)
+
+        form.addRow("Template", self.template_combo)
+        layout.addWidget(form_card)
+        layout.addWidget(generate_button)
+        layout.addStretch(1)
+        return widget
 
     def _card(self) -> QFrame:
         frame = QFrame()
@@ -192,146 +276,173 @@ class MainWindow(QMainWindow):
         return frame
 
     def _connect_signals(self) -> None:
-        self.preset_combo.currentIndexChanged.connect(self.apply_preset)
-        self.encoding_combo.currentIndexChanged.connect(self.sync_encoding_controls)
-        self.generate_button.clicked.connect(self.generate)
-        self.copy_button.clicked.connect(self.copy_output)
+        self._single("preset").currentIndexChanged.connect(self._apply_single_preset)
+        self._single("encoding").currentIndexChanged.connect(self._sync_single_encoding)
+        self._single("generate").clicked.connect(self.generate_single)
+        self.reveal_checkbox.stateChanged.connect(self._refresh_output)
+        self.copy_value_button.clicked.connect(self.copy_value)
+        self.copy_env_button.clicked.connect(self.copy_env_line)
+        self.copy_all_button.clicked.connect(self.copy_all)
+        self.clear_clipboard_button.clicked.connect(self.clear_clipboard)
 
-    def apply_preset(self, _index: int | None = None) -> None:
-        preset = self._selected_preset()
-        self.env_name_input.setText(preset.env_name)
-        self.length_input.setValue(preset.byte_length)
-        self.prefix_input.setText(preset.prefix)
-        self.suffix_input.setText(preset.suffix)
-        self._set_combo_value(self.encoding_combo, preset.encoding)
-        self.sync_encoding_controls()
+    def _apply_single_preset(self, _index: int | None = None) -> None:
+        preset = self._selected_single_preset()
+        self._single("env").setText(preset.env_name)
+        self._single("length").setValue(preset.byte_length)
+        self._single("prefix").setText(preset.prefix)
+        self._single("suffix").setText(preset.suffix)
+        self._set_combo_value(self._single("encoding"), preset.encoding)
+        self._sync_single_encoding()
         self._set_warning(preset.warning)
 
-    def sync_encoding_controls(self) -> None:
-        encoding = self._selected_encoding()
-        self.custom_charset_input.setEnabled(encoding == "custom-charset")
-        if encoding == "uuid-v4":
-            self.length_input.setEnabled(False)
-            self._set_warning(UUID_WARNING)
-        else:
-            self.length_input.setEnabled(True)
-            preset_warning = self._selected_preset().warning
-            self._set_warning(preset_warning)
+    def _sync_single_encoding(self) -> None:
+        encoding = self._selected_single_encoding()
+        self._single("charset").setEnabled(encoding == "custom-charset")
+        self._single("length").setEnabled(encoding != "uuid-v4")
 
-    def generate(self) -> None:
+    def generate_single(self) -> None:
         try:
-            preset = self._selected_preset()
-            encoding = self._selected_encoding()
-            output_format = self._selected_output_format()
-            byte_length = int(self.length_input.value())
-            prefix = self.prefix_input.text()
-            suffix = self.suffix_input.text()
-            env_name = self.env_name_input.text().strip()
-            custom_charset = self.custom_charset_input.text()
-
-            if output_format in {"env", "json"}:
-                validate_env_name(env_name)
-
-            secret = generate_secret(
-                byte_length=byte_length,
-                encoding=encoding,
-                prefix=prefix,
-                suffix=suffix,
-                custom_charset=custom_charset,
-                output_length=byte_length,
-            )
-            entropy_bits = self._estimate_entropy(encoding, byte_length, custom_charset)
-            security_level = get_security_level(entropy_bits)
-            metadata = {
-                "encoding": encoding,
-                "bytes": None if encoding in {"ascii-safe", "custom-charset", "uuid-v4"} else byte_length,
-                "length": byte_length if encoding in {"ascii-safe", "custom-charset"} else None,
-                "estimated_entropy_bits": self._display_entropy_number(entropy_bits),
-                "security_level": security_level,
-            }
-
-            if output_format == "plain":
-                formatted = format_plain(secret)
-            elif output_format == "env":
-                formatted = format_env(env_name, secret)
-            else:
-                formatted = format_json(env_name, secret, metadata)
-
-            self._last_output = formatted
-            self.output_area.setPlainText(formatted)
-            self.copy_button.setEnabled(True)
-            self.entropy_card.set_value(f"{self._display_entropy_number(entropy_bits)} bit")
-            self.security_card.set_value(security_level)
-            self._set_warning(self._combined_warning(preset.warning, encoding, entropy_bits))
-            self.statusBar().showMessage("Generated")
+            request = self._single_request()
+            generated = generate_from_request(request)
+            self._set_batch(GenerationBatch("Single Secret", (generated,)), request.output_format)
+            self.statusBar().showMessage("Generated single secret")
         except Exception as exc:
-            self._last_output = ""
-            self.copy_button.setEnabled(False)
-            self.output_area.clear()
+            self._show_error(str(exc))
+
+    def generate_bulk(self) -> None:
+        selected = [key for key, checkbox in self.bulk_checks.items() if checkbox.isChecked()]
+        if not selected:
+            self._show_error("Select at least one preset.")
+            return
+        try:
+            requests = [request_from_preset(key, output_format="env") for key in selected]
+            self._set_batch(generate_batch("Bulk .env", requests), "env")
+            self.statusBar().showMessage("Generated bulk .env")
+        except Exception as exc:
+            self._show_error(str(exc))
+
+    def generate_template(self) -> None:
+        try:
+            template_key = str(self.template_combo.currentData())
+            self._set_batch(generate_template_pack(template_key, output_format="env"), "env")
+            self.statusBar().showMessage("Generated template pack")
+        except Exception as exc:
+            self._show_error(str(exc))
+
+    def copy_value(self) -> None:
+        generated = self._first_generated()
+        if generated:
+            self._copy_text(generated.value)
+
+    def copy_env_line(self) -> None:
+        generated = self._first_generated()
+        if generated:
+            self._copy_text(format_env(generated.env_name, generated.value))
+
+    def copy_all(self) -> None:
+        if self._current_output:
+            self._copy_text(self._current_output)
+
+    def clear_clipboard(self) -> None:
+        clipboard = QGuiApplication.clipboard()
+        clipboard.clear()
+        self._last_clipboard_text = ""
+        self.statusBar().showMessage("Clipboard cleared")
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        clipboard = QGuiApplication.clipboard()
+        if self._last_clipboard_text and clipboard.text() == self._last_clipboard_text:
+            clipboard.clear()
+        super().closeEvent(event)
+
+    def _single_request(self) -> GenerationRequest:
+        env_name = self._single("env").text().strip()
+        validate_env_name(env_name)
+        byte_length = int(self._single("length").value())
+        encoding = self._selected_single_encoding()
+        return request_from_preset(
+            self._selected_single_preset().key,
+            output_format=self._selected_output_format(),
+            encoding=encoding,
+            byte_length=byte_length,
+            env_name=env_name,
+            prefix=self._single("prefix").text(),
+            suffix=self._single("suffix").text(),
+            custom_charset=self._single("charset").text() or ASCII_SAFE_CHARSET,
+        )
+
+    def _set_batch(self, batch: GenerationBatch, output_format: str) -> None:
+        self._current_batch = batch
+        normalized_format = normalize_output_format(output_format)
+        if normalized_format == "plain" and batch.first():
+            self._current_output = batch.first().value
+        elif normalized_format == "json":
+            self._current_output = format_generated_json(batch.first()) if len(batch.secrets) == 1 else format_json_array(batch)
+        else:
+            self._current_output = format_env_block(batch.secrets)
+        self._set_copy_enabled(True)
+        self._refresh_output()
+        self._refresh_metrics()
+
+    def _refresh_output(self) -> None:
+        if not self._current_batch:
+            return
+        if self.reveal_checkbox.isChecked():
+            self.output_area.setPlainText(self._current_output)
+            return
+        masked = self._current_output
+        for generated in self._current_batch.secrets:
+            masked = masked.replace(generated.value, mask_secret(generated.value))
+        self.output_area.setPlainText(masked)
+
+    def _refresh_metrics(self) -> None:
+        generated = self._first_generated()
+        if not generated:
             self.entropy_card.set_value("-")
             self.security_card.set_value("-")
-            self._set_warning(str(exc))
-            self.statusBar().showMessage("Generation failed")
-
-    def copy_output(self) -> None:
-        if not self._last_output:
+            self._set_warning(None)
             return
+        self.entropy_card.set_value(f"{generated.estimated_entropy_bits} bit")
+        self.security_card.set_value(generated.security_level)
+        warnings = []
+        for item in self._current_batch.secrets if self._current_batch else ():
+            warnings.extend(item.warnings)
+        self._set_warning("\n".join(dict.fromkeys(warnings)) if warnings else None)
+
+    def _show_error(self, message: str) -> None:
+        self._current_batch = None
+        self._current_output = ""
+        self.output_area.clear()
+        self.entropy_card.set_value("-")
+        self.security_card.set_value("-")
+        self._set_copy_enabled(False)
+        self._set_warning(message)
+        self.statusBar().showMessage("Generation failed")
+
+    def _copy_text(self, text: str) -> None:
         clipboard = QGuiApplication.clipboard()
-        clipboard.setText(self._last_output)
+        clipboard.setText(text)
+        self._last_clipboard_text = text
         self.statusBar().showMessage("Copied")
-        self._set_warning(CLIPBOARD_WARNING)
-        if self.clear_clipboard_checkbox.isChecked():
-            copied_text = self._last_output
-            QTimer.singleShot(30000, lambda: self._clear_clipboard_if_same(copied_text))
+        seconds = int(self.clear_delay_combo.currentData())
+        QTimer.singleShot(seconds * 1000, lambda: self._clear_clipboard_if_same(text))
 
     def _clear_clipboard_if_same(self, copied_text: str) -> None:
         clipboard = QGuiApplication.clipboard()
         if clipboard.text() == copied_text:
             clipboard.clear()
+            if self._last_clipboard_text == copied_text:
+                self._last_clipboard_text = ""
             self.statusBar().showMessage("Clipboard cleared")
 
-    def _selected_preset(self) -> SecretPreset:
-        key = self.preset_combo.currentData()
-        return PRESETS[str(key)]
+    def _first_generated(self) -> GeneratedSecret | None:
+        return self._current_batch.first() if self._current_batch else None
 
-    def _selected_encoding(self) -> str:
-        return normalize_encoding(str(self.encoding_combo.currentData()))
-
-    def _selected_output_format(self) -> str:
-        return normalize_output_format(str(self.output_format_combo.currentData()))
-
-    def _set_combo_value(self, combo: QComboBox, value: str) -> None:
-        target = normalize_encoding(value)
-        for index in range(combo.count()):
-            if normalize_encoding(str(combo.itemData(index))) == target:
-                combo.setCurrentIndex(index)
-                return
-
-    def _estimate_entropy(self, encoding: str, byte_length: int, custom_charset: str) -> float:
-        if encoding == "custom-charset":
-            charset_size = len(normalize_charset(custom_charset))
-            return calculate_charset_entropy(byte_length, charset_size)
-        if encoding == "ascii-safe":
-            return calculate_charset_entropy(byte_length, len(ASCII_SAFE_CHARSET))
-        if encoding == "uuid-v4":
-            return 122.0
-        return float(calculate_byte_entropy(byte_length))
-
-    def _combined_warning(
-        self,
-        preset_warning: str | None,
-        encoding: str,
-        entropy_bits: float,
-    ) -> str | None:
-        warnings = []
-        if preset_warning:
-            warnings.append(preset_warning)
-        if encoding == "uuid-v4":
-            warnings.append(UUID_WARNING)
-        entropy_warning = get_entropy_warning(entropy_bits)
-        if entropy_warning:
-            warnings.append(entropy_warning)
-        return "\n".join(warnings) if warnings else None
+    def _set_copy_enabled(self, enabled: bool) -> None:
+        self.copy_value_button.setEnabled(enabled)
+        self.copy_env_button.setEnabled(enabled)
+        self.copy_all_button.setEnabled(enabled)
+        self.clear_clipboard_button.setEnabled(True)
 
     def _set_warning(self, message: str | None) -> None:
         if message:
@@ -340,7 +451,21 @@ class MainWindow(QMainWindow):
         else:
             self.warning_label.hide()
 
-    def _display_entropy_number(self, entropy_bits: float) -> int | float:
-        if float(entropy_bits).is_integer():
-            return int(entropy_bits)
-        return round(entropy_bits, 2)
+    def _selected_single_preset(self) -> SecretPreset:
+        return PRESETS[str(self._single("preset").currentData())]
+
+    def _selected_single_encoding(self) -> str:
+        return normalize_encoding(str(self._single("encoding").currentData()))
+
+    def _selected_output_format(self) -> str:
+        return normalize_output_format(str(self._single("format").currentData()))
+
+    def _set_combo_value(self, combo: QComboBox, value: str) -> None:
+        target = normalize_encoding(value)
+        for index in range(combo.count()):
+            if normalize_encoding(str(combo.itemData(index))) == target:
+                combo.setCurrentIndex(index)
+                return
+
+    def _single(self, key: str):
+        return self.single_widgets[key]
